@@ -4,7 +4,7 @@ import asyncio
 import modal
 from typing import Optional, List
 
-APP_VERSION = "2026-09-24-no-auth"
+APP_VERSION = "2026-10-01-secret-url"
 
 # ---------- Limits ----------
 MAX_WAIT_SECONDS = 540       # wait=True cap (web function ke 600s timeout se pehle)
@@ -12,6 +12,7 @@ MIN_TIMEOUT_SECONDS = 10     # Modal sandbox ka minimum timeout
 MAX_TIMEOUT_SECONDS = 86400  # sandbox ki max life: 24 ghante
 MAX_OUTPUT_CHARS = 20000     # isse bada output truncate hota hai
 MAX_CONTAINERS = 5           # ek saath max containers (bill / abuse control)
+MIN_PATH_TOKEN_LENGTH = 24   # secret URL token ki minimum length
 
 # User ka GPU naam -> Modal GPU string
 GPU_MAP = {
@@ -42,6 +43,10 @@ image = (
 
 # Drive credentials sirf sandbox ko milte hain (web function ko nahi)
 GOOGLE_DRIVE_SECRET = modal.Secret.from_name("google-drive")
+
+# Secret URL token: sirf web function ko milta hai (sandbox ko nahi)
+# Modal secret name: "mcp-path-token", key: MCP_PATH_TOKEN
+MCP_PATH_TOKEN_SECRET = modal.Secret.from_name("mcp-path-token")
 
 
 def _clip(text, limit=None):
@@ -188,10 +193,19 @@ def make_mcp_server():
     image=image,
     timeout=600,
     max_containers=MAX_CONTAINERS,
+    secrets=[MCP_PATH_TOKEN_SECRET],
 )
 @modal.asgi_app()
 def web():
     from fastapi import FastAPI
+
+    # Secret URL: token ke bina /mcp path hi exist nahi karta (404)
+    path_token = os.environ.get("MCP_PATH_TOKEN", "").strip()
+    if len(path_token) < MIN_PATH_TOKEN_LENGTH:
+        raise RuntimeError(
+            f"MCP_PATH_TOKEN missing ya chhota hai (min {MIN_PATH_TOKEN_LENGTH} chars). "
+            "Modal secret 'mcp-path-token' banao (key: MCP_PATH_TOKEN)."
+        )
 
     mcp = make_mcp_server()
 
@@ -201,11 +215,12 @@ def web():
             f"Deployment version: {APP_VERSION}"
         )
 
+    # Token ko kabhi print/log nahi karna
     print(f"Starting Dynamic Python MCP {APP_VERSION}")
 
-    # Endpoint: /mcp (no token required)
+    # Endpoint: /mcp/<MCP_PATH_TOKEN> (secret URL)
     mcp_app = mcp.http_app(
-        path="/mcp",
+        path=f"/mcp/{path_token}",
         transport="streamable-http",
         stateless_http=True,
     )
